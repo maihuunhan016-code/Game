@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Chạy Xe Vượt Chướng Ngại Vật</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#07111f;color:#fff;font-family:'Trebuchet MS','Arial Rounded MT Bold',Arial,sans-serif;overflow:hidden;touch-action:none}
+#game{display:block;width:100vw;height:100vh;background:linear-gradient(#65b8e8 0 42%,#536b3d 42% 100%)}
+#hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;pointer-events:none;z-index:3}
+.badge{font-variant-numeric:tabular-nums;font-feature-settings:'tnum';letter-spacing:.3px;background:linear-gradient(180deg,#10243bdd,#071321dd);border:1px solid #ffffff26;padding:8px 12px;border-radius:14px;font-weight:850;backdrop-filter:blur(8px);box-shadow:0 5px 18px #0004;font-size:14px}
+#warning{position:fixed;top:78px;left:50%;transform:translateX(-50%) scale(.8);opacity:0;z-index:4;background:#e63946;color:#fff;padding:10px 18px;border-radius:999px;font-weight:900;box-shadow:0 0 25px #e6394688;transition:.15s}
+#warning.show{opacity:1;transform:translateX(-50%) scale(1)}
+#menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:5;background:#030a14aa}
+.card{width:min(92vw,520px);padding:28px;border-radius:24px;background:#0b1728ee;border:1px solid #ffffff22;text-align:center;box-shadow:0 20px 80px #0008}
+h1{font-size:clamp(28px,7vw,52px);margin:0 0 8px} p{color:#c6d4e6}
+button{border:0;border-radius:15px;padding:13px 22px;background:#ffd166;color:#111;font-size:18px;font-weight:900;cursor:pointer}
+#score,#speed,#lives{font-family:'Arial Rounded MT Bold','Trebuchet MS',Arial,sans-serif;font-size:18px;font-weight:900;letter-spacing:1px;text-shadow:0 2px 5px #0008}#controls{position:fixed;bottom:20px;left:0;right:0;display:flex;justify-content:center;gap:14px;z-index:3}
+.ctrl{width:72px;height:58px;background:#081525cc;color:#fff;border:1px solid #ffffff33;border-radius:18px;font-size:28px;font-weight:900;touch-action:manipulation}
+.small{font-size:13px;margin-top:15px;color:#9fb1c8}
+#nitro{background:linear-gradient(180deg,#ff8c42,#e63946);color:#fff;min-width:88px;box-shadow:0 0 18px #ff6b35aa}
+#nitro.active{background:linear-gradient(180deg,#ffd166,#ff7b00);box-shadow:0 0 28px #ffd166cc;transform:scale(1.06)}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div class="badge">🏁 Điểm: <span id="score">0</span></div>
+  <div class="badge">⚡ Tốc độ: <span id="speed">0</span></div>
+  <div class="badge">❤️ <span id="lives">3</span></div><div class="badge">🔥 <span id="nitroText">100</span>%</div><div class="badge" id="weather">☀️ Trời quang</div>
+</div>
+<div id="warning">⚠️ CẢNH BÁO!</div>
+<div id="controls">
+  <button class="ctrl" id="left">◀</button><button class="ctrl" id="brake">⏸</button><button class="ctrl" id="nitro">🔥 NITRO</button><button class="ctrl" id="right">▶</button>
+</div>
+<div id="menu">
+ <div class="card">
+  <h1>🚗 Chạy Xe Vượt Chướng Ngại Vật</h1>
+  <p>Điều khiển xe qua lại trên <b>3 làn</b>, né xe và hàng rào. Đường sẽ bất ngờ cua, thu hẹp còn 2 làn hoặc mở lại 3 làn.</p>
+  <button id="start">BẮT ĐẦU CHẠY</button>
+  <div class="small">PC: ← → hoặc A/D · Space để phanh · Điện thoại: dùng nút bên dưới</div>
+ </div>
+</div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+let W,H,dpr,roadX,roadW, laneCount=3, laneCenters=[], player, obstacles=[], particles=[];
+let running=false, score=0, speed=4.8, distance=0, spawn=0, roadShift=0, curve=0, nextEvent=1200;
+let lives=3, muted=false, last=0, audioCtx=null, cameraX=0, nitro=100, nitroOn=false, lightning=0;
+let weather='clear', weatherTimer=0, weatherChange=7000;
+let rainDrops=[], fogLevel=0, nightLevel=0;
+
+function resize(){dpr=devicePixelRatio||1; W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0); roadW=Math.min(W*.82,620); roadX=(W-roadW)/2; updateLanes();}
+function updateLanes(){laneCenters=[]; for(let i=0;i<laneCount;i++) laneCenters.push(roadX+roadW*(i+.5)/laneCount);}
+addEventListener('resize',resize); resize();
+
+function beep(freq=440,dur=.08,type='square',vol=.035){
+ if(!audioCtx) return; const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.type=type;o.frequency.value=freq;g.gain.value=vol;o.connect(g);g.connect(audioCtx.destination);o.start();g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+dur);o.stop(audioCtx.currentTime+dur);
+}
+function warning(){const el=document.getElementById('warning');el.classList.add('show');setTimeout(()=>el.classList.remove('show'),700);beep(180,.12,'sawtooth',.06);beep(120,.16,'sawtooth',.04);}
+function reset(){
+ laneCount=3;updateLanes();score=0;speed=6.2;distance=0;spawn=0;nextEvent=1200;lives=3;cameraX=0;obstacles=[];particles=[];nitro=100;nitroOn=false;lightning=0;
+weather='clear';weatherTimer=0;weatherChange=3200+Math.random()*3800;rainDrops=[];fogLevel=0;nightLevel=0;
+ player={lane:1,x:laneCenters[1],y:H*.78,w:42,h:74, target:1, inv:0};
+ hud();
+}
+function hud(){
+ document.getElementById('score').textContent=Math.floor(score);
+ document.getElementById('speed').textContent=Math.floor(speed*17);
+ document.getElementById('lives').textContent=lives;document.getElementById('nitroText').textContent=Math.floor(nitro);
+ const names={clear:'☀️ Trời quang',night:'🌙 Ban đêm',fog:'🌫️ Sương mù',rain:'🌧️ Mưa'};
+ document.getElementById('weather').textContent=names[weather]||names.clear;
+}
+function start(){
+ audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();audioCtx.resume();
+ document.getElementById('menu').style.display='none';reset();running=true;last=performance.now();requestAnimationFrame(loop);beep(660,.1,'triangle',.05);beep(880,.16,'triangle',.05);
+}
+document.getElementById('start').onclick=start;
+function move(dir){if(!running)return;player.target=Math.max(0,Math.min(laneCount-1,player.target+dir));beep(330+player.target*80,.05,'square',.025);}
+function setNitro(on){
+  if(!running || nitro<=1){nitroOn=false;document.getElementById('nitro').classList.remove('active');return;}
+  nitroOn=on;document.getElementById('nitro').classList.toggle('active',nitroOn);
+  if(nitroOn) beep(95,.08,'sawtooth',.045);
+}
+function nitroDown(e){e.preventDefault();setNitro(true)}
+function nitroUp(e){e.preventDefault();setNitro(false)}
+document.getElementById('nitro').onpointerdown=nitroDown;
+document.getElementById('nitro').onpointerup=nitroUp;
+document.getElementById('nitro').onpointercancel=nitroUp;
+
+document.getElementById('left').onpointerdown=()=>move(-1);document.getElementById('right').onpointerdown=()=>move(1);
+document.getElementById('brake').onpointerdown=()=>{speed=Math.max(5.2,speed-2);beep(110,.07,'sawtooth',.03)};
+addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key.toLowerCase()==='a')move(-1);if(e.key==='ArrowRight'||e.key.toLowerCase()==='d')move(1);if(e.code==='Space'){e.preventDefault();speed=Math.max(5.2,speed-2)}if(e.code==='ShiftLeft'||e.code==='ShiftRight')setNitro(true)});
+
+addEventListener('keyup',e=>{if(e.code==='ShiftLeft'||e.code==='ShiftRight')setNitro(false)});
+function roadAt(y){
+ const p=Math.max(0,Math.min(1,y/H));
+ const smoothCurve=Math.sin((distance+y)*.00048)*curve;
+ const curveOffset=smoothCurve*(p*p)*roadW*.085;
+ return roadX+curveOffset;
+}
+function spawnObstacle(){
+ const lane=Math.floor(Math.random()*laneCount), type=Math.random()<.23?'barrier':'car';
+ const colors=['#e76f51','#2a9d8f','#9b5de5','#f72585','#f4a261','#00b4d8','#84cc16','#ef4444'];const color=colors[Math.floor(Math.random()*colors.length)];obstacles.push({lane,type,y:-100,w:type==='car'?46:68,h:type==='car'?76:34,speed:1+Math.random()*2,color});
+ if(Math.random()<.18 && laneCount===3) {let l=(lane+1)%3; obstacles.push({lane:l,type:'car',y:-260,w:46,h:76,speed:1.2,color:colors[Math.floor(Math.random()*colors.length)]});}
+}
+function event(){
+ const r=Math.random();
+ if(r<.34){laneCount=2;warning();} else if(r<.68){laneCount=3;warning();} else {curve=(Math.random()>.5?1:-1);warning();}
+ updateLanes();player.target=Math.min(player.target,laneCount-1);
+ setTimeout(()=>{if(r<.34||r<.68){laneCount=3;updateLanes();warning();}else curve=0;},2500+Math.random()*2200);
+}
+function collide(a,b){return Math.abs(a.x-b.x)<(a.w+b.w)*.42 && Math.abs(a.y-b.y)<(a.h+b.h)*.42}
+function crash(){
+ lives--; player.inv=100; beep(80,.18,'sawtooth',.09);
+ for(let i=0;i<18;i++)particles.push({x:player.x,y:player.y,vx:(Math.random()-.5)*8,vy:(Math.random()-.5)*8,life:35});
+ if(lives<=0){running=false;document.getElementById('menu').style.display='flex';document.querySelector('#menu h1').textContent='💥 HẾT CHẶNG!';document.querySelector('#menu p').innerHTML='Bạn đạt <b>'+Math.floor(score)+'</b> điểm. Sẵn sàng chạy lại?';document.getElementById('start').textContent='CHẠY LẠI';}
+ hud();
+}
+
+function setWeather(){
+  const r=Math.random();
+  weather = r<.30 ? 'clear' : r<.55 ? 'night' : r<.80 ? 'fog' : 'rain';
+  if(weather==='night'){nightLevel=.72;fogLevel=.05;}
+  else if(weather==='fog'){nightLevel=.05;fogLevel=.72;}
+  else if(weather==='rain'){nightLevel=.15;fogLevel=.12;}
+  else {nightLevel=0;fogLevel=0;}
+  warning();
+}
+function updateWeather(dt){
+  weatherTimer+=dt;
+  if(weatherTimer>weatherChange){
+    weatherTimer=0; weatherChange=4200+Math.random()*5200; setWeather();
+  }
+  if(weather==='rain'){
+    for(let i=0;i<3;i++) rainDrops.push({x:Math.random()*W,y:-20,v:8+Math.random()*8,l:12+Math.random()*18});
+    rainDrops.forEach(d=>{d.y+=d.v*dt*.08; d.x-=d.v*.18; d.l-=dt*.03});
+    rainDrops=rainDrops.filter(d=>d.y<H&&d.l>0);
+  } else rainDrops=[];
+}
+function drawWeather(){
+  if(weather==='night'){
+    ctx.fillStyle='rgba(2,7,25,.72)';ctx.fillRect(0,0,W,H);
+    // moon
+    ctx.fillStyle='rgba(255,245,190,.9)';ctx.beginPath();ctx.arc(W*.82,H*.14,24,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='rgba(2,7,25,.72)';ctx.beginPath();ctx.arc(W*.835,H*.13,21,0,Math.PI*2);ctx.fill();
+  }
+  if(weather==='fog'){
+    const g=ctx.createLinearGradient(0,H*.25,0,H);
+    g.addColorStop(0,'rgba(220,230,235,.62)');g.addColorStop(1,'rgba(210,220,225,.18)');
+    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  }
+  if(weather==='rain'){
+    ctx.strokeStyle='rgba(190,220,255,.55)';ctx.lineWidth=1.4;
+    rainDrops.forEach(d=>{ctx.beginPath();ctx.moveTo(d.x,d.y);ctx.lineTo(d.x-7,d.y+18);ctx.stroke();});
+    ctx.fillStyle='rgba(40,70,100,.12)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(35,43,55,.82)';
+    for(const [cx,cy,r] of [[W*.18,H*.12,42],[W*.25,H*.10,55],[W*.34,H*.14,38],[W*.70,H*.11,48],[W*.78,H*.14,60],[W*.88,H*.11,40]]){
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill();
+    }
+    if(lightning>0){
+      ctx.fillStyle='rgba(245,250,255,.30)';ctx.fillRect(0,0,W,H);
+      ctx.strokeStyle='rgba(255,245,170,.98)';ctx.lineWidth=5;ctx.beginPath();
+      const x=W*.63;ctx.moveTo(x,H*.10);ctx.lineTo(x-18,H*.22);ctx.lineTo(x+2,H*.21);ctx.lineTo(x-25,H*.37);ctx.stroke();
+    }
+  }
+  // Headlight beams in dark/fog
+  if(nightLevel>.2 || fogLevel>.35){
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    const y=player?.y||H*.78, x=player?.x||W/2;
+    const g=ctx.createRadialGradient(x,y-35,8,x,y-180,190);
+    g.addColorStop(0,'rgba(255,245,180,.32)');g.addColorStop(1,'rgba(255,245,180,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.moveTo(x-18,y-10);ctx.lineTo(x-115,y-220);ctx.lineTo(x+115,y-220);ctx.lineTo(x+18,y-10);ctx.closePath();ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawRoad(){
+ ctx.fillStyle='#3f7138';ctx.fillRect(0,H*.42,W,H*.58);
+
+ // nền trời gradient
+ const sky=ctx.createLinearGradient(0,0,0,H*.42);
+ sky.addColorStop(0,'#4aa8dc');sky.addColorStop(1,'#bde9f6');
+ ctx.fillStyle=sky;ctx.fillRect(0,0,W,H*.42);
+  if(weather==='clear'){
+    const sun=ctx.createRadialGradient(W*.78,H*.13,5,W*.78,H*.13,48);
+    sun.addColorStop(0,'rgba(255,255,220,1)');sun.addColorStop(1,'rgba(255,215,70,0)');
+    ctx.fillStyle=sun;ctx.fillRect(W*.78-55,H*.13-55,110,110);
+    ctx.fillStyle='#ffe066';ctx.beginPath();ctx.arc(W*.78,H*.13,24,0,Math.PI*2);ctx.fill();
+  }
+
+ // núi xa
+ ctx.fillStyle='#71986a';
+ ctx.beginPath();ctx.moveTo(0,H*.42);ctx.lineTo(W*.12,H*.28);ctx.lineTo(W*.24,H*.40);
+ ctx.lineTo(W*.39,H*.25);ctx.lineTo(W*.55,H*.40);ctx.lineTo(W*.72,H*.29);
+ ctx.lineTo(W*.88,H*.40);ctx.lineTo(W,H*.31);ctx.lineTo(W,H*.42);ctx.closePath();ctx.fill();
+
+ // đường phối cảnh
+ const horizon=H*.42,bottom=H;
+ ctx.beginPath();
+ ctx.moveTo(roadAt(horizon),horizon);
+ ctx.lineTo(roadAt(bottom),bottom);
+ ctx.lineTo(roadAt(bottom)+roadW,bottom);
+ ctx.lineTo(roadAt(horizon)+roadW,horizon);
+ ctx.closePath();
+ const asphalt=ctx.createLinearGradient(0,horizon,0,bottom);
+ asphalt.addColorStop(0,'#4c5158');asphalt.addColorStop(1,'#24282e');
+ ctx.fillStyle=asphalt;ctx.fill();
+
+ // lề đường sáng
+ ctx.strokeStyle='#f7f2d0';ctx.lineWidth=7;
+ ctx.beginPath();ctx.moveTo(roadAt(horizon),horizon);ctx.lineTo(roadAt(bottom),bottom);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(roadAt(horizon)+roadW,horizon);ctx.lineTo(roadAt(bottom)+roadW,bottom);ctx.stroke();
+
+ // vạch làn có chiều sâu
+ ctx.strokeStyle='#f4f0d0';ctx.lineWidth=3;ctx.setLineDash([34,30]);
+ for(let i=1;i<laneCount;i++){
+   ctx.beginPath();
+   ctx.moveTo(roadAt(horizon)+roadW*i/laneCount,horizon);
+   ctx.lineTo(roadAt(bottom)+roadW*i/laneCount,bottom);
+   ctx.stroke();
+ }
+ ctx.setLineDash([]);
+
+ // cọc tiêu hai bên
+ for(let y=horizon+20;y<bottom;y+=62){
+   const x=roadAt(y), p=(y-horizon)/(bottom-horizon);
+   const s=.45+p*.9;
+   ctx.fillStyle='#f4f4f4';
+   ctx.fillRect(x-13*s,y,8*s,20*s);ctx.fillRect(x+roadW+5*s,y,8*s,20*s);
+   ctx.fillStyle='#e94f37';
+   ctx.fillRect(x-13*s,y,8*s,6*s);ctx.fillRect(x+roadW+5*s,y,8*s,6*s);
+ }
+
+ // cây/ bụi hai bên, tạo chiều sâu mà không rung camera
+ for(let y=horizon+35;y<bottom;y+=95){
+   const p=(y-horizon)/(bottom-horizon), s=.25+p*.9;
+   const lx=roadAt(y)-42*s, rx=roadAt(y)+roadW+42*s;
+   for(const x of [lx,rx]){
+     ctx.fillStyle='#5b3b24';ctx.fillRect(x-3*s,y-25*s,6*s,30*s);
+     ctx.fillStyle='#1e5a35';ctx.beginPath();ctx.arc(x,y-35*s,18*s,0,Math.PI*2);ctx.fill();
+     ctx.fillStyle='#287443';ctx.beginPath();ctx.arc(x-9*s,y-26*s,13*s,0,Math.PI*2);ctx.fill();
+   }
+ }
+}
+function car(x,y,w,h,body,playerCar=false){
+ ctx.save();ctx.translate(x,y);
+
+ // bóng
+ ctx.fillStyle='#0005';ctx.beginPath();ctx.ellipse(0,h*.48,w*.62,8,0,0,Math.PI*2);ctx.fill();
+
+ // bánh
+ ctx.fillStyle='#12151a';
+ ctx.fillRect(-w*.55,-h*.42,w*.20,h*.84);
+ ctx.fillRect(w*.35,-h*.42,w*.20,h*.84);
+
+ // thân
+ const g=ctx.createLinearGradient(-w/2,0,w/2,0);
+ g.addColorStop(0,body);g.addColorStop(.5,playerCar?'#5c7cff':body);g.addColorStop(1,body);
+ ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(-w/2,-h/2,w,h,10);ctx.fill();
+
+ // kính
+ ctx.fillStyle='#aee7f5';ctx.beginPath();ctx.roundRect(-w*.31,-h*.31,w*.62,h*.22,5);ctx.fill();
+ ctx.fillStyle='#7ec9df';ctx.fillRect(-w*.31,h*.03,w*.62,h*.17);
+
+ // đèn
+ ctx.fillStyle='#fff4b0';ctx.fillRect(-w*.40,-h*.43,w*.19,5);ctx.fillRect(w*.21,-h*.43,w*.19,5);
+ ctx.fillStyle=playerCar?'#ffcf3a':'#ff4d5d';ctx.fillRect(-w*.40,h*.37,w*.19,5);ctx.fillRect(w*.21,h*.37,w*.19,5);
+
+ if(playerCar){
+   ctx.strokeStyle='#ffffff88';ctx.lineWidth=2;ctx.stroke();
+ }
+ ctx.restore();
+}
+function barrier(x,y,w,h){
+ ctx.save();ctx.translate(x,y);
+ ctx.fillStyle='#0004';ctx.beginPath();ctx.ellipse(0,h*.55,w*.58,5,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#777';ctx.fillRect(-w/2,-h/2,w,h);
+ ctx.fillStyle='#f1f1e6';ctx.fillRect(-w/2,-h/2,w,h);
+ ctx.save();ctx.beginPath();ctx.rect(-w/2,-h/2,w,h);ctx.clip();
+ ctx.strokeStyle='#ed5b43';ctx.lineWidth=8;
+ for(let i=-w;i<w*1.5;i+=24){ctx.beginPath();ctx.moveTo(i,-h);ctx.lineTo(i+20,h);ctx.stroke();}
+ ctx.restore();
+ ctx.fillStyle='#555';ctx.fillRect(-w*.44,h*.45,7,13);ctx.fillRect(w*.37,h*.45,7,13);
+ ctx.restore();
+}
+function loop(t){
+ if(!running)return; const dt=Math.min(32,t-last);last=t;
+ updateWeather(dt);
+  if(nitroOn&&nitro>0){
+    speed=Math.min(20,speed+dt*.0028);nitro=Math.max(0,nitro-dt*.022);
+    if(Math.random()<.18)particles.push({x:player.x+(Math.random()-.5)*18,y:player.y+35,vx:(Math.random()-.5)*2,vy:3+Math.random()*3,life:22,nitro:true});
+  }else{nitro=Math.min(100,nitro+dt*.0045);speed=Math.min(12.5,speed+dt*.00014);}
+  if(nitro<=0)setNitro(false);
+  distance+=speed*dt;score+=speed*dt*.010;
+ const targetX=laneCenters[player.target];
+player.x+=(targetX-player.x)*Math.min(.11, dt*.006);
+player.y=H*.78;
+ spawn-=dt;if(spawn<=0){spawnObstacle();spawn=Math.max(560,980-speed*28+Math.random()*420);}
+ nextEvent-=dt;if(nextEvent<=0){event();nextEvent=6000+Math.random()*6000;}
+ obstacles.forEach(o=>o.y+=(speed+o.speed*.55)*dt*.060);
+ obstacles=obstacles.filter(o=>o.y<H+130);
+ if(player.inv<=0)for(const o of obstacles)if(collide(player,o)){o.y=H+200;crash();break;}
+ player.inv=Math.max(0,player.inv-dt*.08);
+ particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.25;p.life--});particles=particles.filter(p=>p.life>0);
+ draw();hud();requestAnimationFrame(loop);
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ ctx.fillStyle='#69bce8';ctx.fillRect(0,0,W,H*.42);
+ ctx.fillStyle='#fff9';ctx.beginPath();ctx.arc(W*.15,H*.17,35,0,7);ctx.arc(W*.22,H*.14,45,0,7);ctx.arc(W*.28,H*.18,30,0,7);ctx.fill();
+ drawRoad();
+ obstacles.forEach(o=>{let x=roadAt(o.y)+roadW*(o.lane+.5)/laneCount;o.x=x;o.type==='car'?car(x,o.y,o.w,o.h,o.color||'#e76f51'):barrier(x,o.y,o.w,o.h)});
+ if(nitroOn){
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<5;i++){ctx.fillStyle=i%2?'#ffd166':'#ff6b35';ctx.globalAlpha=.75-i*.12;ctx.beginPath();ctx.arc(player.x+(Math.random()-.5)*12,player.y+38+i*7,5+i,0,Math.PI*2);ctx.fill();}
+    ctx.restore();
+  }
+  if(player.inv<=0||Math.floor(player.inv/8)%2===0)car(player.x,player.y,player.w,player.h,'#4361ee',true);
+ particles.forEach(p=>{ctx.fillStyle=p.nitro?(Math.random()>.5?'#ff6b35':'#ffd166'):'#ffd166';ctx.globalAlpha=p.life/35;ctx.fillRect(p.x,p.y,p.nitro?7:5,p.nitro?7:5);ctx.globalAlpha=1});
+  drawWeather();
+}
+</script>
+</body>
+</html>
